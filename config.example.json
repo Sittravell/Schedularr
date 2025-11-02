@@ -1,0 +1,24 @@
+{
+    "rd": {
+        "token": "YOUR_REAL_DEBRID_TOKEN_HERE"
+    },
+    "trakt": {
+        "refresh_token": "YOUR_TRAKT_REFRESH_TOKEN",
+        "access_token": "",
+        "client_id": "YOUR_TRAKT_CLIENT_ID",
+        "client_secret": "YOUR_TRAKT_CLIENT_SECRET",
+        "redirect_uri": "urn:ietf:wg:oauth:2.0:oob"
+    },
+    "movies": [131, 466, 789],
+    "shows": [425, 950, 1234],
+    "radarr": {
+        "base_url": "https://your-radarr-url.com",
+        "port": "7878",
+        "api_key": "YOUR_RADARR_API_KEY"
+    },
+    "sonarr": {
+        "base_url": "https://your-sonarr-url.com",
+        "port": "8989",
+        "api_key": "YOUR_SONARR_API_KEY"
+    }
+}
