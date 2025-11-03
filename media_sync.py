@@ -76,61 +76,17 @@ class MediaSyncManager:
         logger.info(f"Download capacity - Movies: {total_movie_ddl}, Shows: {can_download_show}")
         return total_movie_ddl, can_download_show
     
-    def refresh_trakt_token(self):
-        """Refresh Trakt access token if needed"""
-        trakt_config = self.config['trakt']
-        is_expired = True;
-
-        if 'expires_in' in trakt_config and 'created_at' in trakt_config :
-            buffer = 300
-            is_expired = time.time() >= trakt_config['created_at'] + trakt_config['expires_in'] - buffer
-
-        if not is_expired and 'access_token' in trakt_config and trakt_config['access_token']:
-            logger.info("Trakt access token exists and not expired, skipping refresh")
-            return
-        
-        url = "https://api.trakt.tv/oauth/token"
-        payload = {
-            "client_id": trakt_config['client_id'],
-            "client_secret": trakt_config['client_secret'],
-            "redirect_uri": trakt_config['redirect_uri'],
-            "refresh_token": trakt_config['refresh_token'],
-            "grant_type": "refresh_token"
-        }
+    def get_list_items(self, list_meta: Dict) -> List[Dict]:
+        """Fetch items from a MDBlist"""
+        apiKey = self.config['mdbList']['api_key']
+        url = f"https://api.mdblist.com/lists/{list_meta['id']}/items?apikey={apiKey}&unified=true"
         
         try:
-            response = requests.post(url, json=payload)
-            response.raise_for_status()
-            token_data = response.json()
-            
-            # Update config with new tokens
-            self.config['trakt']['access_token'] = token_data['access_token']
-            self.config['trakt']['refresh_token'] = token_data['refresh_token']
-            self.config['trakt']['created_at'] = token_data['created_at']
-            self.config['trakt']['expires_in'] = token_data['expires_in']
-            self.save_config()
-            
-            logger.info("Trakt token refreshed successfully")
-        except Exception as e:
-            logger.error(f"Failed to refresh Trakt token: {e}")
-            raise
-    
-    def get_trakt_list_items(self, list_id: int) -> List[Dict]:
-        """Fetch items from a Trakt list"""
-        url = f"https://api.trakt.tv/lists/{list_id}/items"
-        headers = {
-            "Authorization": f"Bearer {self.config['trakt']['access_token']}",
-            "Content-Type": "application/json",
-            "trakt-api-version": "2",
-            "trakt-api-key": self.config['trakt']['client_id']
-        }
-        
-        try:
-            response = requests.get(url, headers=headers)
+            response = requests.get(url)
             response.raise_for_status()
             return response.json()
         except Exception as e:
-            logger.error(f"Failed to get Trakt list {list_id}: {e}")
+            logger.error(f"Failed to get MDBlist list {list_meta['name']}: {e}")
             return []
     
     def get_radarr_existing_movies(self) -> List[int]:
@@ -180,7 +136,7 @@ class MediaSyncManager:
             logger.error(f"Failed to lookup movie {tmdb_id}: {e}")
             return None
     
-    def radarr_add_movie(self, movie_data: Dict) -> bool:
+    def radarr_add_movie(self, movie_data: Dict, list_meta: Dict) -> bool:
         """Add a movie to Radarr"""
         base_url = self.config['radarr']['base_url']
         port = self.config['radarr'].get('port')
@@ -193,8 +149,18 @@ class MediaSyncManager:
         
         headers = {"X-Api-Key": api_key}
         
+        payload = {
+            "tmdbId": movie_data['tmdbId'],
+            "qualityProfileId": list_meta['qualityProfileId'],
+            "rootFolderPath": list_meta['rootFolderPath'],
+            "addOptions": {
+                "monitor": "movieOnly",
+                "searchForMovie": True
+            }
+        }
+
         try:
-            response = requests.post(url, json=movie_data, headers=headers)
+            response = requests.post(url, json=payload, headers=headers)
             response.raise_for_status()
             logger.info(f"Added movie: {movie_data.get('title', 'Unknown')}")
             return True
@@ -204,29 +170,29 @@ class MediaSyncManager:
     
     def process_movies(self, total_movie_ddl: int):
         """Process movie lists and add to Radarr"""
-        movie_list_ids = self.config.get('movies', [])
+        movie_list = self.config.get('movies', [])
         
-        if not movie_list_ids:
+        if not movie_list:
             logger.info("No movie lists configured")
             return
         
         # Calculate starting index based on current hour
-        list_count = len(movie_list_ids)
+        list_count = len(movie_list)
         start_index = self.current_hour % list_count
         
         logger.info(f"Processing movies starting from index {start_index}")
         
-        list_ids_in_order = []
+        list_in_order = []
 
         for i in range(total_movie_ddl):
-            list_ids_in_order.append(movie_list_ids[(start_index + i) % list_count])
+            list_in_order.append(movie_list[(start_index + i) % list_count])
             
         # Fetch all list items
-        list_id_dictionary = {}
-        for list_id in movie_list_ids:
-            items = self.get_trakt_list_items(list_id)
-            list_id_dictionary[list_id] = items
-            logger.info(f"Fetched {len(items)} items from list {list_id}")
+        list_item_dictionary = {}
+        for list_meta in movie_list:
+            items = self.get_list_items(list_meta)
+            list_item_dictionary[list_meta['id']] = items
+            logger.info(f"Fetched {len(items)} items from list {list_meta['name']}")
         
         # Get existing movies from Radarr
         existing_tmdb_ids = self.get_radarr_existing_movies()
@@ -234,32 +200,30 @@ class MediaSyncManager:
         
         # Process each list
         movies_added = 0
-        for idx, list_id in enumerate(list_ids_in_order):
+        for idx, list_meta in enumerate(list_in_order):
             # Cycle through lists if we've added more than total_movie_ddl
             if movies_added >= total_movie_ddl:
                 break
             
-            items = list_id_dictionary[list_id]
+            items = list_item_dictionary[list_meta['id']]
             
             # Filter for movies only and not already in Radarr
             for item in items:
                 if movies_added >= total_movie_ddl:
                     break
                 
-                if item.get('type') != 'movie':
+                if item.get('mediatype') != 'movie':
                     continue
                 
-                movie = item.get('movie', {})
-                tmdb_id = movie.get('ids', {}).get('tmdb')
+                tmdb_id = item.get('id')
                 
                 if not tmdb_id or tmdb_id in existing_tmdb_ids:
                     continue
                 
-                # Lookup and add movie
                 movie_data = self.radarr_lookup_movie(tmdb_id)
         
                 if movie_data:
-                    if self.radarr_add_movie(movie_data):
+                    if self.radarr_add_movie(movie_data, list_meta):
                         movies_added += 1
                         existing_tmdb_ids.append(tmdb_id)  # Prevent duplicates in this run
                         break;
@@ -310,7 +274,7 @@ class MediaSyncManager:
             logger.error(f"Failed to lookup series {tmdb_id}: {e}")
             return None
     
-    def sonarr_add_series(self, series_data: Dict) -> bool:
+    def sonarr_add_series(self, series_data: Dict, list_meta: Dict) -> bool:
         """Add a series to Sonarr"""
         base_url = self.config['sonarr']['base_url']
         port = self.config['sonarr'].get('port')
@@ -323,8 +287,21 @@ class MediaSyncManager:
         
         headers = {"X-Api-Key": api_key}
         
+        payload = {
+            "title": series_data['title'], 
+            "tvdbId": series_data['tvdbId'],
+            "qualityProfileId": list_meta['qualityProfileId'],
+            "rootFolderPath": list_meta['rootFolderPath'],
+            "addOptions": {
+                "monitor": "all",
+                "searchForMissingEpisodes": True,
+                "searchForCutoffUnmetEpisodes": True
+            },
+            "monitored": True
+        }
+        
         try:
-            response = requests.post(url, json=series_data, headers=headers)
+            response = requests.post(url, json=payload, headers=headers)
             response.raise_for_status()
             logger.info(f"Added series: {series_data.get('title', 'Unknown')}")
             return True
@@ -338,21 +315,21 @@ class MediaSyncManager:
             logger.info("Insufficient capacity for shows, skipping")
             return
         
-        show_list_ids = self.config.get('shows', [])
+        show_list = self.config.get('shows', [])
         
-        if not show_list_ids:
+        if not show_list:
             logger.info("No show lists configured")
             return
         
         # Pick one list based on current hour
-        list_count = len(show_list_ids)
+        list_count = len(show_list)
         index = self.current_hour % list_count
-        selected_list_id = show_list_ids[index]
+        selected_list_meta = show_list[index]
         
-        logger.info(f"Processing shows from list {selected_list_id}")
+        logger.info(f"Processing shows from list {selected_list_meta['name']}")
         
         # Fetch list items
-        items = self.get_trakt_list_items(selected_list_id)
+        items = self.get_list_items(selected_list_meta)
         
         # Get existing series from Sonarr
         existing_tmdb_ids = self.get_sonarr_existing_series()
@@ -361,11 +338,10 @@ class MediaSyncManager:
         # Process shows
         shows_added = 0
         for item in items:
-            if item.get('type') != 'show':
+            if item.get('mediatype') != 'show':
                 continue
             
-            show = item.get('show', {})
-            tmdb_id = show.get('ids', {}).get('tmdb')
+            tmdb_id = item.get('id')
             
             if not tmdb_id or tmdb_id in existing_tmdb_ids:
                 continue
@@ -373,7 +349,7 @@ class MediaSyncManager:
             # Lookup and add series
             series_data = self.sonarr_lookup_series(tmdb_id)
             if series_data:
-                if self.sonarr_add_series(series_data):
+                if self.sonarr_add_series(series_data, selected_list_meta):
                     shows_added += 1
                     existing_tmdb_ids.append(tmdb_id)
                     break  # Only add one show per run
@@ -385,20 +361,14 @@ class MediaSyncManager:
         logger.info("=== Starting Media Sync ===")
         
         try:
-            # Step 1: Get Real-Debrid capacity
             rd_data = self.get_rd_active_count()
             total_movie_ddl, can_download_show = self.calculate_download_capacity(rd_data)
             
-            # Step 2: Refresh Trakt token if needed
-            self.refresh_trakt_token()
-            
-            # Step 3: Process movies
             if total_movie_ddl > 0:
                 self.process_movies(total_movie_ddl)
             else:
                 logger.info("No capacity for movies")
-            
-            # Step 4: Process shows
+
             self.process_shows(can_download_show)
             
             logger.info("=== Media Sync Completed Successfully ===")
