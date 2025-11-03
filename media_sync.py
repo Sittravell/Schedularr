@@ -392,7 +392,7 @@ class MediaSyncManager:
             # Step 2: Refresh Trakt token if needed
             self.refresh_trakt_token()
             
-            Step 3: Process movies
+            # Step 3: Process movies
             if total_movie_ddl > 0:
                 self.process_movies(total_movie_ddl)
             else:
