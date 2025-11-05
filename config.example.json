@@ -42,5 +42,47 @@
         "base_url": "https://your-sonarr-url.com",
         "port": "8989",
         "api_key": "YOUR_SONARR_API_KEY"
-    }
+    },
+    "blackout_periods": [
+        {
+            "name": "Daily Peak Hours",
+            "enabled": true,
+            "recurring": "daily",
+            "start_time": "18:00",
+            "end_time": "23:00",
+            "_comment": "Blocks script execution every day from 6 PM to 11 PM"
+        },
+        {
+            "name": "Daily Maintenance Window",
+            "enabled": true,
+            "recurring": "daily",
+            "start_time": "02:00",
+            "duration": "2h",
+            "_comment": "Blocks script execution every day from 2 AM for 2 hours (until 4 AM)"
+        },
+        {
+            "name": "Overnight Blackout Example",
+            "enabled": false,
+            "recurring": "daily",
+            "start_time": "23:00",
+            "end_time": "06:00",
+            "_comment": "Example: blocks from 11 PM to 6 AM daily (handles overnight correctly)"
+        },
+        {
+            "name": "One-time Maintenance",
+            "enabled": false,
+            "recurring": "once",
+            "start": "2025-12-25T00:00:00",
+            "end": "2025-12-26T00:00:00",
+            "_comment": "Example: one-time blackout for specific dates (Christmas day)"
+        },
+        {
+            "name": "One-time with Duration",
+            "enabled": false,
+            "recurring": "once",
+            "start": "2025-11-10T14:00:00",
+            "duration": "4h 30m",
+            "_comment": "Example: starts at specific datetime and runs for 4 hours 30 minutes"
+        }
+    ]
 }

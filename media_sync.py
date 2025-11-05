@@ -8,7 +8,7 @@ Based on Real-Debrid capacity
 import json
 import requests
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, time as dt_time
 from pathlib import Path
 from typing import Dict, List, Optional
 import time
@@ -47,6 +47,144 @@ class MediaSyncManager:
             logger.error(f"Failed to save config: {e}")
             raise
     
+    def is_in_blackout_period(self) -> bool:
+        """Check if current time is within any configured blackout period"""
+        blackout_periods = self.config.get('blackout_periods', [])
+        
+        if not blackout_periods:
+            return False
+        
+        now = datetime.now()
+        
+        for period in blackout_periods:
+            if not period.get('enabled', True):
+                continue
+            
+            try:
+                recurring = period.get('recurring', 'once')
+                
+                if recurring == 'daily':
+                    # Daily recurring blackout - only check time, not date
+                    if self._is_in_daily_blackout(period, now):
+                        logger.info(f"In daily blackout period: {period.get('name', 'Unnamed')}")
+                        return True
+                
+                elif recurring == 'once':
+                    # One-time blackout period
+                    if self._is_in_onetime_blackout(period, now):
+                        logger.info(f"In blackout period: {period.get('name', 'Unnamed')}")
+                        return True
+                
+            except Exception as e:
+                logger.warning(f"Error parsing blackout period {period.get('name', 'Unnamed')}: {e}")
+                continue
+        
+        return False
+    
+    def _is_in_daily_blackout(self, period: Dict, now: datetime) -> bool:
+        """Check if current time is within a daily recurring blackout"""
+        start_time_str = period.get('start_time')
+        end_time_str = period.get('end_time')
+        duration_str = period.get('duration')
+        
+        if start_time_str and end_time_str:
+            # Time range mode (e.g., 18:00 to 23:00)
+            start_time = datetime.strptime(start_time_str, '%H:%M').time()
+            end_time = datetime.strptime(end_time_str, '%H:%M').time()
+            current_time = now.time()
+            
+            # Handle overnight periods (e.g., 23:00 to 02:00)
+            if start_time <= end_time:
+                return start_time <= current_time <= end_time
+            else:
+                return current_time >= start_time or current_time <= end_time
+        
+        elif start_time_str and duration_str:
+            # Start time + duration mode
+            start_time = datetime.strptime(start_time_str, '%H:%M').time()
+            delta = self._parse_duration(duration_str)
+            
+            # Create datetime objects for today
+            start_datetime = datetime.combine(now.date(), start_time)
+            end_datetime = start_datetime + delta
+            
+            # If duration spans multiple days, adjust comparison
+            if end_datetime.date() > now.date():
+                # Check if we're between start today and end tomorrow
+                return now >= start_datetime
+            elif end_datetime.date() < now.date():
+                # Check if we're before end time (carried over from yesterday)
+                yesterday_start = start_datetime - timedelta(days=1)
+                yesterday_end = yesterday_start + delta
+                return now <= yesterday_end
+            else:
+                # Same day
+                return start_datetime <= now <= end_datetime
+        
+        return False
+    
+    def _is_in_onetime_blackout(self, period: Dict, now: datetime) -> bool:
+        """Check if current time is within a one-time blackout period"""
+        start_str = period.get('start')
+        end_str = period.get('end')
+        duration_str = period.get('duration')
+        
+        if start_str and end_str:
+            # Time range mode
+            start_time = datetime.fromisoformat(start_str)
+            end_time = datetime.fromisoformat(end_str)
+            return start_time <= now <= end_time
+        
+        elif start_str and duration_str:
+            # Start + duration mode
+            start_time = datetime.fromisoformat(start_str)
+            delta = self._parse_duration(duration_str)
+            end_time = start_time + delta
+            return start_time <= now <= end_time
+        
+        return False
+    
+    def _parse_duration(self, duration_str: str) -> timedelta:
+        """
+        Parse duration string to timedelta
+        Supports formats like: "2h", "30m", "1d", "2w", "1y"
+        Can combine: "1d 2h 30m"
+        """
+        duration_map = {
+            's': 'seconds',
+            'm': 'minutes',
+            'h': 'hours',
+            'd': 'days',
+            'w': 'weeks'
+        }
+        
+        total_delta = timedelta()
+        parts = duration_str.strip().split()
+        
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            
+            # Extract number and unit
+            unit = part[-1].lower()
+            try:
+                value = int(part[:-1])
+            except ValueError:
+                logger.warning(f"Invalid duration part: {part}")
+                continue
+            
+            if unit == 'y':
+                # Approximate year as 365 days
+                total_delta += timedelta(days=value * 365)
+            elif unit in duration_map:
+                kwargs = {duration_map[unit]: value}
+                total_delta += timedelta(**kwargs)
+            else:
+                logger.warning(f"Unknown duration unit: {unit}")
+        
+        return total_delta
+
     def get_rd_active_count(self) -> Dict:
         """Get active torrents count from Real-Debrid"""
         url = "https://api.real-debrid.com/rest/1.0/torrents/activeCount"
@@ -359,6 +497,11 @@ class MediaSyncManager:
     def run(self):
         """Main execution flow"""
         logger.info("=== Starting Media Sync ===")
+        
+        # Check blackout periods first
+        if self.is_in_blackout_period():
+            logger.info("Skipping execution - currently in blackout period")
+            return
         
         try:
             rd_data = self.get_rd_active_count()
