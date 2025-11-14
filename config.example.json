@@ -1,4 +1,12 @@
 {
+    "download": {
+        "movie": {
+            "max": 20
+        },
+        "show": {
+            "max": 2
+        }
+    },
     "rd": {
         "token": "YOUR_REAL_DEBRID_TOKEN_HERE"
     },

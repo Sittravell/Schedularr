@@ -204,15 +204,24 @@ class MediaSyncManager:
         """Calculate how many movies and whether shows can be downloaded"""
         nb = rd_data['nb']
         limit = rd_data['limit']
-        
+        maxMovie = self.config.get('download', {}).get('movie', {}).get('max', 20)
+        maxShow = self.config.get('download', {}).get('show', {}).get('max', 2)
+
         half_download = limit // 2  # Integer division for cleaner logic
         download_left = limit - nb
         # Calculate total movie downloads, ensuring non-negative
         total_movie_ddl = max(0, download_left - half_download)
-        can_download_show = download_left >= 10
+        total_movie_ddl = min(maxMovie, total_movie_ddl)
+
+        download_left_show = download_left - total_movie_ddl
+
+        if download_left_show < 10:
+            total_show_ddl = 0
+        else:
+            total_show_ddl = min(maxShow, download_left_show // 10)
         
-        logger.info(f"Download capacity - Movies: {total_movie_ddl}, Shows: {can_download_show}")
-        return total_movie_ddl, can_download_show
+        logger.info(f"Download capacity - Movies: {total_movie_ddl}, Shows: {total_show_ddl}")
+        return total_movie_ddl, total_show_ddl
     
     def get_list_items(self, list_meta: Dict) -> List[Dict]:
         """Fetch items from a MDBlist"""
@@ -447,9 +456,9 @@ class MediaSyncManager:
             logger.error(f"Failed to add series: {e}")
             return False
     
-    def process_shows(self, can_download_show: bool):
+    def process_shows(self, total_show_ddl: int):
         """Process show lists and add to Sonarr"""
-        if not can_download_show:
+        if total_show_ddl < 1:
             logger.info("Insufficient capacity for shows, skipping")
             return
         
@@ -476,6 +485,9 @@ class MediaSyncManager:
         # Process shows
         shows_added = 0
         for item in items:
+            if shows_added >= total_show_ddl:
+                break
+
             if item.get('mediatype') != 'show':
                 continue
             
@@ -490,7 +502,6 @@ class MediaSyncManager:
                 if self.sonarr_add_series(series_data, selected_list_meta):
                     shows_added += 1
                     existing_tmdb_ids.append(tmdb_id)
-                    break  # Only add one show per run
         
         logger.info(f"Added {shows_added} shows to Sonarr")
     
@@ -505,14 +516,14 @@ class MediaSyncManager:
         
         try:
             rd_data = self.get_rd_active_count()
-            total_movie_ddl, can_download_show = self.calculate_download_capacity(rd_data)
-            
+            total_movie_ddl, total_show_ddl = self.calculate_download_capacity(rd_data)
+
             if total_movie_ddl > 0:
                 self.process_movies(total_movie_ddl)
             else:
                 logger.info("No capacity for movies")
 
-            self.process_shows(can_download_show)
+            self.process_shows(total_show_ddl)
             
             logger.info("=== Media Sync Completed Successfully ===")
             
